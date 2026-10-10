@@ -1,27 +1,30 @@
 # zig-sev-guest
 
 A Zig 0.17.0 library for retrieving and verifying AMD SEV-SNP attestation reports.
+Retrieval requires an x86_64 Linux SNP guest; saved reports can be parsed and
+verified on other systems.
 
 Retrieval, parsing, signature verification, and policy validation are separate
 operations. Parsing a report does not make it trustworthy.
 
 ## Build
 
-Verification uses OpenSSL 3 or 4 (`libcrypto`). There are no Zig dependencies.
-Tests run offline without SNP hardware.
+Install Zig 0.17.0, OpenSSL 3 or 4 development headers, and `pkg-config`.
+There are no Zig dependencies. Tests run offline without SNP hardware.
 
 ```sh
-# macOS
-brew install openssl@3
-zig build -Dopenssl-prefix="$(brew --prefix openssl@3)"
-zig build test -Dopenssl-prefix="$(brew --prefix openssl@3)"
+# Debian / Ubuntu dependencies
+sudo apt install libssl-dev pkg-config
 
-# Compile Linux device code on macOS, without OpenSSL or Linux execution
+zig build
+zig build test
+
+# Cross-compile Linux device code without OpenSSL or executing it
 zig build check -Dcrypto=false -Dtarget=x86_64-linux-musl
 ```
 
-On Linux, install `libssl-dev` and `pkg-config`, then run `zig build` and
-`zig build test` without the OpenSSL prefix option.
+Use equivalent packages on other systems. For a custom OpenSSL installation,
+pass `-Dopenssl-prefix=/path/to/openssl` to the build commands.
 
 ## Use
 
@@ -62,7 +65,7 @@ zig build inspect -Dcrypto=false -- src/testdata/attestation.bin
 Verify the included synthetic VLEK report, certificate table, CRL, and policy:
 
 ```sh
-zig build verify -Dopenssl-prefix="$(brew --prefix openssl@3)" -- --table \
+zig build verify -- --table \
   src/testdata/synthetic/vlek-report.bin src/testdata/synthetic/vlek-table.bin \
   examples/synthetic-policy.json - src/testdata/synthetic/root.der \
   src/testdata/synthetic/vlek-valid.crl
