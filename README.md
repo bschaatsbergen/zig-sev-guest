@@ -1,7 +1,6 @@
 # zig-sev-guest
 
 A Zig 0.17.0 library for retrieving and verifying AMD SEV-SNP attestation reports.
-Inspired by [google/go-sev-guest](https://github.com/google/go-sev-guest).
 
 Retrieval, parsing, signature verification, and policy validation are separate
 operations. Parsing a report does not make it trustworthy.
@@ -96,3 +95,5 @@ VLEK and Turin have offline signed-fixture coverage.
 
 Public API comments cover ownership and protocol details. Apache-2.0;
 see [NOTICE](NOTICE) for fixture provenance.
+
+Inspired by [google/go-sev-guest](https://github.com/google/go-sev-guest).
