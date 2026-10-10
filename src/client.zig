@@ -255,3 +255,60 @@ test "every allocation failure during buffer growth releases previous allocation
         }
     }.run, .{});
 }
+
+test "fuzz hostile device responses and bounded certificate negotiation" {
+    try std.testing.fuzz({}, struct {
+        fn run(_: void, smith: *std.testing.Smith) !void {
+            const Mock = struct {
+                smith: *std.testing.Smith,
+                calls: usize = 0,
+
+                fn ioctl(ctx: *anyopaque, command: u32, guest: *abi.GuestRequest) u16 {
+                    const self: *@This() = @ptrCast(@alignCast(ctx));
+                    self.calls += 1;
+                    const req: *abi.ReportRequest = @ptrFromInt(guest.req_data);
+                    const resp: *abi.ReportResponse = @ptrFromInt(guest.resp_data);
+                    self.smith.bytes(&resp.data);
+                    if (self.smith.value(bool)) {
+                        std.mem.writeInt(u32, resp.data[0..4], 0, .little);
+                        std.mem.writeInt(u32, resp.data[4..8], report.size, .little);
+                        @memset(resp.data[8..32], 0);
+                        @memcpy(resp.data[32..][0..report.size], @embedFile("testdata/attestation.bin"));
+                        @memcpy(resp.data[32 + 0x50 ..][0..64], &req.user_data);
+                        std.mem.writeInt(u32, resp.data[32 + 0x30 ..][0..4], req.vmpl, .little);
+                    }
+                    if (command == abi.get_ext_report) {
+                        const ext: *abi.ExtendedReportRequest = @ptrFromInt(guest.req_data);
+                        if (ext.certs_len != 0) {
+                            const dest: [*]u8 = @ptrFromInt(ext.certs_address);
+                            self.smith.bytes(dest[0..ext.certs_len]);
+                            if (self.smith.value(bool)) @memset(dest[0..ext.certs_len], 0);
+                        }
+                        if (self.smith.value(bool)) {
+                            ext.certs_len = if (self.smith.value(bool)) self.smith.value(u32) else ext.certs_len + abi.page_size;
+                            guest.exitinfo2 = @as(u64, 1) << 32;
+                            return 5;
+                        }
+                        if (self.smith.value(bool)) ext.certs_len = self.smith.value(u32);
+                    }
+                    if (self.smith.value(bool)) {
+                        guest.exitinfo2 = self.smith.value(u64);
+                        return self.smith.value(u16);
+                    }
+                    return 0;
+                }
+            };
+            var mock: Mock = .{ .smith = smith };
+            var client: Client = .{ .transport = .{ .context = &mock, .ioctl = Mock.ioctl } };
+            if (client.getExtendedReport(std.testing.allocator, @splat(42), 2)) |value| {
+                var result = value;
+                defer result.deinit();
+                try std.testing.expect(result.certificates.len <= abi.max_cert_bytes);
+                _ = try cert_table.parse(result.certificates);
+                try std.testing.expectEqualSlices(u8, &@as([64]u8, @splat(42)), result.report[0x50..0x90]);
+                try std.testing.expectEqual(2, report.integer(u32, &result.report, 0x30));
+            } else |_| {}
+            try std.testing.expect(mock.calls <= 4);
+        }
+    }.run, .{});
+}
