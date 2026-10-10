@@ -202,6 +202,18 @@ fn checkCrl(bytes: []const u8, root: *c.X509, intermediate: *c.X509, now: i64) !
         const nid = c.OBJ_obj2nid(c.X509_EXTENSION_get_object(ext));
         if (c.X509_EXTENSION_get_critical(ext) != 0 or nid == c.NID_delta_crl or nid == c.NID_issuing_distribution_point) return error.UnsupportedCrl;
     }
+    if (c.X509_CRL_get_REVOKED(crl)) |entries| {
+        const stack: *c.OPENSSL_STACK = @ptrCast(entries);
+        var j: c_int = 0;
+        while (j < c.OPENSSL_sk_num(stack)) : (j += 1) {
+            const entry: *c.X509_REVOKED = @ptrCast(@alignCast(c.OPENSSL_sk_value(stack, j) orelse return error.InvalidCrl));
+            // RFC 5280 §5.3: an unhandled critical entry extension makes the
+            // entire CRL unusable, even when that entry has a different serial.
+            // certificateIssuer changes issuer scope and requires indirect CRL support.
+            if (c.X509_REVOKED_get_ext_by_critical(entry, 1, -1) >= 0 or
+                c.X509_REVOKED_get_ext_by_NID(entry, c.NID_certificate_issuer, -1) >= 0) return error.UnsupportedCrl;
+        }
+    }
     var revoked: ?*c.X509_REVOKED = null;
     if (c.X509_CRL_get0_by_cert(crl, &revoked, intermediate) != 0) return error.CertificateRevoked;
 }
@@ -373,4 +385,18 @@ test "fuzz CRL decoding and revocation checks" {
             checkCrl(bytes[0..n], certs[0].handle, certs[1].handle, 1767225600) catch {};
         }
     }.run, .{});
+}
+
+test "critical CRL entry semantics reject the entire signed CRL" {
+    const root = try Certificate.parse(@embedFile("testdata/synthetic/crl-critical-root.der"));
+    defer root.deinit();
+    const intermediate = try Certificate.parse(@embedFile("testdata/synthetic/crl-critical-intermediate.der"));
+    defer intermediate.deinit();
+    try checkCrl(@embedFile("testdata/synthetic/crl-critical-control.crl"), root.handle, intermediate.handle, 1767225600);
+    try std.testing.expectError(error.UnsupportedCrl, checkCrl(
+        @embedFile("testdata/synthetic/crl-critical-entry.crl"),
+        root.handle,
+        intermediate.handle,
+        1767225600,
+    ));
 }
