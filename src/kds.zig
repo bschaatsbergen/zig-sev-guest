@@ -65,10 +65,12 @@ pub const Client = struct {
 
 /// Opt-in HTTPS implementation using Zig 0.17 std.Io and std.http.
 /// System TLS roots, hostname/time checks, no redirects/proxies/retries/cache,
-/// 8 KiB headers, bounded uncompressed bodies, and a 30-second overall deadline.
+/// 8 KiB header/trailer sections, bounded bodies, and a 30-second overall deadline.
 /// Responses must use Content-Length or chunked framing, with a complete body.
 /// Allocators must be thread-safe; do not call the same Http concurrently.
 pub const Http = struct {
+    const max_head_bytes = 8192;
+
     io: std.Io,
     timeout: std.Io.Duration = .fromSeconds(30),
     last_status: ?std.http.Status = null,
@@ -103,7 +105,7 @@ pub const Http = struct {
     }
 
     fn request(self: *Http, allocator: std.mem.Allocator, url: []const u8, limit: usize) anyerror![]u8 {
-        var client: std.http.Client = .{ .allocator = allocator, .io = self.io };
+        var client: std.http.Client = .{ .allocator = allocator, .io = self.io, .read_buffer_size = max_head_bytes };
         defer client.deinit();
         var req = try client.request(.GET, try std.Uri.parse(url), .{
             .redirect_behavior = .unhandled,
@@ -118,6 +120,9 @@ pub const Http = struct {
     }
 
     fn readResponse(allocator: std.mem.Allocator, reader: *std.http.Reader, head: std.http.Client.Response.Head, limit: usize) ![]u8 {
+        // TLS buffers can contain a complete oversized head before std.http's
+        // streaming limit is checked. Enforce the limit on the parsed section too.
+        if (head.bytes.len > max_head_bytes) return error.HttpHeadersOversize;
         if (head.status != .ok) return error.HttpStatus;
         if (head.content_encoding != .identity) return error.CompressedResponse;
         if (head.transfer_encoding == .none and head.content_length == null) return error.UnframedResponse;
@@ -130,13 +135,14 @@ pub const Http = struct {
         // body is complete. TLS also permits missing close_notify for HTTP, so
         // transport EOF alone cannot authenticate the end of a response.
         if (reader.state != .ready) return error.TruncatedResponse;
+        if (reader.trailers.len > max_head_bytes) return error.HttpHeadersOversize;
         return bytes;
     }
 };
 
 fn readHttpForTest(allocator: std.mem.Allocator, wire: []const u8, limit: usize) ![]u8 {
     var input: std.Io.Reader = .fixed(wire);
-    var reader: std.http.Reader = .{ .in = &input, .interface = undefined, .state = .ready, .max_head_len = 8192 };
+    var reader: std.http.Reader = .{ .in = &input, .interface = undefined, .state = .ready, .max_head_len = Http.max_head_bytes };
     const head = try std.http.Client.Response.Head.parse(try reader.receiveHead());
     return Http.readResponse(allocator, &reader, head, limit);
 }
@@ -157,6 +163,25 @@ test "HTTPS response framing rejects truncation and ambiguous boundaries" {
     try std.testing.expectError(error.AmbiguousResponseLength, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n", 10));
     try std.testing.expectError(error.ResponseTooLarge, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n", 10));
     try std.testing.expectError(error.StreamTooLong, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n", 3));
+}
+
+test "HTTP header limits apply even when TLS has buffered the entire section" {
+    const prefix = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nX-Padding: ";
+    const suffix = "\r\n\r\n";
+    inline for (.{ 8192, 8193, 32768 }) |len| {
+        const padding: [len - prefix.len - suffix.len]u8 = @splat('a');
+        const wire = prefix ++ padding ++ suffix ++ "test";
+        if (len <= Http.max_head_bytes) {
+            const bytes = try readHttpForTest(std.testing.allocator, wire, 4);
+            defer std.testing.allocator.free(bytes);
+            try std.testing.expectEqualStrings("test", bytes);
+        } else {
+            try std.testing.expectError(error.HttpHeadersOversize, readHttpForTest(std.testing.allocator, wire, 4));
+        }
+    }
+    const padding: [9000]u8 = @splat('a');
+    const trailers = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\nX-Padding: " ++ padding ++ "\r\n\r\n";
+    try std.testing.expectError(error.HttpHeadersOversize, readHttpForTest(std.testing.allocator, trailers, 4));
 }
 
 test "KDS URLs mock retrieval and allocator failure cleanup" {
