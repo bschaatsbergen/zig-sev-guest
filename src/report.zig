@@ -133,12 +133,14 @@ pub fn parse(bytes: []const u8) !Report {
     const version = integer(u32, bytes, 0);
     if (version < 2 or version > 5) return error.UnsupportedReportVersion;
     const policy = integer(u64, bytes, 8);
-    if (policy & (1 << 17) == 0 or policy >> 26 != 0) return error.InvalidGuestPolicy;
+    const policy_bits: u6 = if (version >= 5) 26 else 25;
+    if (policy & (1 << 17) == 0 or policy >> policy_bits != 0) return error.InvalidGuestPolicy;
     const vmpl = integer(u32, bytes, 0x30);
     if (vmpl > 3 and !(version >= 3 and vmpl == 0xffffffff)) return error.InvalidVmpl;
     if (integer(u32, bytes, 0x34) != 1) return error.UnsupportedSignatureAlgorithm;
     const platform = integer(u64, bytes, 0x40);
-    if (platform & ~@as(u64, 0xbf) != 0) return error.InvalidPlatformInfo;
+    const platform_mask: u64 = if (version >= 5) 0xbf else if (version >= 3) 0x3f else 0x1f;
+    if (platform & ~platform_mask != 0) return error.InvalidPlatformInfo;
     const info = integer(u32, bytes, 0x48);
     if (info >> 5 != 0) return error.InvalidSignerInfo;
     const signer: Signer = switch ((info >> 2) & 7) {
@@ -230,4 +232,45 @@ test "TCB layout and partial order" {
     try std.testing.expectEqual(4, t.snp);
     try std.testing.expect(!t.atLeast(.{ .boot_loader = 3 }));
     try std.testing.expectError(error.NonzeroReserved, Tcb.parse(&.{ 1, 2, 3, 4, 0, 0, 0, 5 }, false));
+}
+
+test "reserved fields enums and unsigned report framing" {
+    const valid = @embedFile("testdata/attestation.bin").*;
+    for ([_]usize{ 0x4c, 0x188, 0x1eb, 0x1ef, 0x1f8, 0x2d0, 0x318, 0x49f }) |offset| {
+        var bad = valid;
+        bad[offset] = 1;
+        try std.testing.expectError(error.NonzeroReserved, parse(&bad));
+    }
+    var bad = valid;
+    bad[0x48] = 8;
+    try std.testing.expectError(error.InvalidSignerInfo, parse(&bad));
+    bad = valid;
+    bad[0x34] = 2;
+    try std.testing.expectError(error.UnsupportedSignatureAlgorithm, parse(&bad));
+    bad = valid;
+    bad[0x30] = 4;
+    try std.testing.expectError(error.InvalidVmpl, parse(&bad));
+    bad = valid;
+    bad[0x40] = 0x40;
+    try std.testing.expectError(error.InvalidPlatformInfo, parse(&bad));
+    bad = valid;
+    bad[0xb] |= 2;
+    try std.testing.expectError(error.InvalidGuestPolicy, parse(&bad));
+    bad = valid;
+    bad[0x48] = 30;
+    @memset(bad[signed_size..], 0);
+    try std.testing.expectEqual(Signer.none, (try parse(&bad)).signer);
+}
+
+test "fuzz report framing" {
+    try std.testing.fuzz({}, struct {
+        fn run(_: void, smith: *std.testing.Smith) !void {
+            var bytes: [size + 1]u8 = undefined;
+            smith.bytes(&bytes);
+            const n = smith.valueRangeAtMost(u16, 0, bytes.len);
+            if (parse(bytes[0..n])) |r| {
+                try std.testing.expectEqualSlices(u8, bytes[0..n], &r.raw);
+            } else |_| {}
+        }
+    }.run, .{});
 }

@@ -88,3 +88,32 @@ test "table bounds terminator duplicate GUIDs and overlapping blobs" {
     try std.testing.expectError(error.InvalidCertificateRange, parse(&b));
     try std.testing.expectEqual(0, (try parse(&.{})).count);
 }
+
+test "padded fixture integer overflow and borrowed lookup" {
+    const bytes = @embedFile("testdata/synthetic/vcek-table.bin");
+    const table = try parse(bytes);
+    try std.testing.expectEqual(3, table.count);
+    try std.testing.expectEqualSlices(u8, @embedFile("testdata/synthetic/vcek.der"), table.find(vcek).?);
+    var invalid = bytes.*;
+    @memset(invalid[16..24], 255);
+    try std.testing.expectError(error.InvalidCertificateRange, parse(&invalid));
+    invalid = bytes.*;
+    @memset(invalid[0..16], 0);
+    try std.testing.expectError(error.InvalidGuid, parse(&invalid));
+    invalid = bytes.*;
+    @memset(invalid[20..24], 0);
+    try std.testing.expectError(error.InvalidCertificateRange, parse(&invalid));
+}
+
+test "fuzz certificate table framing" {
+    try std.testing.fuzz({}, struct {
+        fn run(_: void, smith: *std.testing.Smith) !void {
+            var bytes: [8192]u8 = undefined;
+            smith.bytes(&bytes);
+            const n = smith.valueRangeAtMost(u16, 0, bytes.len);
+            if (parse(bytes[0..n])) |table| {
+                for (0..table.count) |i| _ = table.entry(i);
+            } else |_| {}
+        }
+    }.run, .{});
+}

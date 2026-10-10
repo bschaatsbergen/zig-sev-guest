@@ -228,3 +228,30 @@ test "closed device and portable guard" {
     try std.testing.expectEqual(9, client.diagnostics.linux_errno);
     if (comptime builtin.os.tag != .linux) try std.testing.expectError(error.UnsupportedPlatform, Device.open());
 }
+
+test "every allocation failure during buffer growth releases previous allocation" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const Mock = struct {
+                fn ioctl(_: *anyopaque, _: u32, guest: *abi.GuestRequest) u16 {
+                    const request: *abi.ExtendedReportRequest = @ptrFromInt(guest.req_data);
+                    if (request.certs_len < 8192) {
+                        request.certs_len += abi.page_size;
+                        guest.exitinfo2 = @as(u64, 1) << 32;
+                        return 5;
+                    }
+                    const resp: *abi.ReportResponse = @ptrFromInt(guest.resp_data);
+                    @memcpy(resp.data[32..][0..report.size], @embedFile("testdata/attestation.bin"));
+                    @memcpy(resp.data[32 + 0x50 ..][0..64], &request.data.user_data);
+                    std.mem.writeInt(u32, resp.data[4..8], report.size, .little);
+                    return 0;
+                }
+            };
+            var context: u8 = 0;
+            var client: Client = .{ .transport = .{ .context = &context, .ioctl = Mock.ioctl } };
+            var result = try client.getExtendedReport(allocator, @splat(0), 0);
+            defer result.deinit();
+            try std.testing.expectEqual(8192, result.certificates.len);
+        }
+    }.run, .{});
+}
