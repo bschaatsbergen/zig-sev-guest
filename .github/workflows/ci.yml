@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Install OpenSSL (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+      - name: Install OpenSSL (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - name: Formatting
+        run: zig fmt --check build.zig build.zig.zon src examples
+      - name: Offline tests and compilation
+        shell: bash
+        run: |
+          args=()
+          if [[ -n "${OPENSSL_PREFIX:-}" ]]; then args+=("-Dopenssl-prefix=$OPENSSL_PREFIX"); fi
+          zig build test "${args[@]}"
+          zig build check "${args[@]}"
+          zig build test -Dcrypto=false
+      - name: Offline verification example
+        shell: bash
+        run: |
+          args=()
+          if [[ -n "${OPENSSL_PREFIX:-}" ]]; then args+=("-Dopenssl-prefix=$OPENSSL_PREFIX"); fi
+          zig build verify "${args[@]}" -- --table \
+            src/testdata/synthetic/vlek-report.bin \
+            src/testdata/synthetic/vlek-table.bin \
+            examples/synthetic-policy.json - src/testdata/synthetic/root.der \
+            src/testdata/synthetic/vlek-valid.crl
+  cross:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Linux compilation and UAPI checks (no Linux execution)
+        run: |
+          zig build check -Dcrypto=false -Dtarget=x86_64-linux-musl
+          zig build check -Dcrypto=false -Dtarget=x86_64-linux-gnu
+          zig build -Dcrypto=false -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe

@@ -33,6 +33,17 @@ pub fn build(b: *std.Build) void {
     b.step("test", "Run deterministic, offline tests").dependOn(&b.addRunArtifact(tests).step);
     const check = b.step("check", "Compile tests and examples without executing them");
     check.dependOn(&tests.step);
+    const uapi = b.addObject(.{
+        .name = "linux-uapi-check",
+        .root_module = b.createModule(.{
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl }),
+            .optimize = .Debug,
+            .link_libc = true,
+        }),
+    });
+    uapi.root_module.addCSourceFile(.{ .file = b.path("tests/linux_uapi.c"), .flags = &.{"-std=c11"} });
+    b.step("abi-check", "Check sizes offsets and ioctls against Linux UAPI headers").dependOn(&uapi.step);
+    check.dependOn(&uapi.step);
     inline for (.{ "fetch", "inspect", "kds", "verify" }) |name| {
         if (!std.mem.eql(u8, name, "verify") or crypto) {
             const exe = b.addExecutable(.{
