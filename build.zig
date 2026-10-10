@@ -31,5 +31,24 @@ pub fn build(b: *std.Build) void {
     }
     const tests = b.addTest(.{ .root_module = mod });
     b.step("test", "Run deterministic, offline tests").dependOn(&b.addRunArtifact(tests).step);
-    b.step("check", "Compile tests without executing them").dependOn(&tests.step);
+    const check = b.step("check", "Compile tests and examples without executing them");
+    check.dependOn(&tests.step);
+    inline for (.{ "fetch", "inspect", "kds", "verify" }) |name| {
+        if (!std.mem.eql(u8, name, "verify") or crypto) {
+            const exe = b.addExecutable(.{
+                .name = "sev-" ++ name,
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("examples/" ++ name ++ ".zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{.{ .name = "sev_guest", .module = mod }},
+                }),
+            });
+            b.installArtifact(exe);
+            check.dependOn(&exe.step);
+            const run = b.addRunArtifact(exe);
+            run.addPassthruArgs();
+            b.step(name, "Run the " ++ name ++ " example").dependOn(&run.step);
+        }
+    }
 }
