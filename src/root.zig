@@ -10,6 +10,7 @@ pub const crypto_enabled = @import("build_options").crypto;
 pub const certificate = if (crypto_enabled) @import("certificate.zig") else struct {};
 pub const verify = if (crypto_enabled) @import("verify.zig") else struct {};
 pub const trust = @import("trust.zig");
+pub const kds = @import("kds.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
