@@ -66,6 +66,7 @@ pub const Client = struct {
 /// Opt-in HTTPS implementation using Zig 0.17 std.Io and std.http.
 /// System TLS roots, hostname/time checks, no redirects/proxies/retries/cache,
 /// 8 KiB headers, bounded uncompressed bodies, and a 30-second overall deadline.
+/// Responses must use Content-Length or chunked framing, with a complete body.
 /// Allocators must be thread-safe; do not call the same Http concurrently.
 pub const Http = struct {
     io: std.Io,
@@ -111,15 +112,52 @@ pub const Http = struct {
         });
         defer req.deinit();
         try req.sendBodiless();
-        var response = try req.receiveHead(&.{});
+        const response = try req.receiveHead(&.{});
         self.last_status = response.head.status;
-        if (response.head.status != .ok) return error.HttpStatus;
-        if (response.head.content_encoding != .identity) return error.CompressedResponse;
-        if (response.head.content_length) |len| if (len > limit) return error.ResponseTooLarge;
+        return readResponse(allocator, &req.reader, response.head, limit);
+    }
+
+    fn readResponse(allocator: std.mem.Allocator, reader: *std.http.Reader, head: std.http.Client.Response.Head, limit: usize) ![]u8 {
+        if (head.status != .ok) return error.HttpStatus;
+        if (head.content_encoding != .identity) return error.CompressedResponse;
+        if (head.transfer_encoding == .none and head.content_length == null) return error.UnframedResponse;
+        if (head.transfer_encoding != .none and head.content_length != null) return error.AmbiguousResponseLength;
+        if (head.content_length) |len| if (len > limit) return error.ResponseTooLarge;
         var buffer: [4096]u8 = undefined;
-        return response.reader(&buffer).allocRemaining(allocator, .limited(limit));
+        const bytes = try reader.bodyReader(&buffer, head.transfer_encoding, head.content_length).allocRemaining(allocator, .limited(limit));
+        errdefer allocator.free(bytes);
+        // Zig 0.17's content-length reader can report EOF before the declared
+        // body is complete. TLS also permits missing close_notify for HTTP, so
+        // transport EOF alone cannot authenticate the end of a response.
+        if (reader.state != .ready) return error.TruncatedResponse;
+        return bytes;
     }
 };
+
+fn readHttpForTest(allocator: std.mem.Allocator, wire: []const u8, limit: usize) ![]u8 {
+    var input: std.Io.Reader = .fixed(wire);
+    var reader: std.http.Reader = .{ .in = &input, .interface = undefined, .state = .ready, .max_head_len = 8192 };
+    const head = try std.http.Client.Response.Head.parse(try reader.receiveHead());
+    return Http.readResponse(allocator, &reader, head, limit);
+}
+
+test "HTTPS response framing rejects truncation and ambiguous boundaries" {
+    const allocator = std.testing.allocator;
+    inline for (.{
+        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntest",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n",
+    }) |wire| {
+        const body = try readHttpForTest(allocator, wire, 4);
+        defer allocator.free(body);
+        try std.testing.expectEqualStrings("test", body);
+    }
+    try std.testing.expectError(error.TruncatedResponse, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nx", 10));
+    try std.testing.expectError(error.ReadFailed, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nx", 10));
+    try std.testing.expectError(error.UnframedResponse, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nx", 10));
+    try std.testing.expectError(error.AmbiguousResponseLength, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n", 10));
+    try std.testing.expectError(error.ResponseTooLarge, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n", 10));
+    try std.testing.expectError(error.StreamTooLong, readHttpForTest(allocator, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n", 3));
+}
 
 test "KDS URLs mock retrieval and allocator failure cleanup" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
