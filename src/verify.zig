@@ -331,3 +331,46 @@ test "embedded AMD CA roles signatures and unsupported products" {
         .endorsement = @embedFile("testdata/vcek.der"),
     }, .{ .product = .turin, .now = 1767225600, .revocation = .unchecked }, &d));
 }
+
+test "fuzz signed report tampering cannot authenticate" {
+    try std.testing.fuzz({}, struct {
+        fn run(_: void, smith: *std.testing.Smith) !void {
+            var raw = @embedFile("testdata/attestation.bin").*;
+            const offset = smith.index(raw.len);
+            raw[offset] ^= smith.valueRangeAtMost(u8, 1, 255);
+            var d: Diagnostics = .{};
+            if (attestation(&raw, .{ .endorsement = @embedFile("testdata/vcek.der") }, .{
+                .product = .milan,
+                .now = 1669852800,
+                .revocation = .unchecked,
+            }, &d)) |_| {
+                return error.AuthenticatedTamperedReport;
+            } else |_| {}
+        }
+    }.run, .{});
+}
+
+test "fuzz CRL decoding and revocation checks" {
+    const root = try Certificate.parse(@embedFile("testdata/synthetic/root.der"));
+    defer root.deinit();
+    const intermediate = try Certificate.parse(@embedFile("testdata/synthetic/vcek-intermediate.der"));
+    defer intermediate.deinit();
+    try std.testing.fuzz(.{ root, intermediate }, struct {
+        fn run(certs: struct { Certificate, Certificate }, smith: *std.testing.Smith) !void {
+            var bytes: [4096]u8 = undefined;
+            var n: usize = undefined;
+            if (smith.value(bool)) {
+                n = smith.valueRangeAtMost(u16, 0, bytes.len);
+                smith.bytes(bytes[0..n]);
+            } else {
+                const seed = @embedFile("testdata/synthetic/vcek-valid.crl");
+                @memcpy(bytes[0..seed.len], seed);
+                n = if (smith.value(bool)) seed.len else smith.index(seed.len + 1);
+                for (0..smith.valueRangeAtMost(u8, 1, 8)) |_| {
+                    bytes[smith.index(seed.len)] ^= smith.valueRangeAtMost(u8, 1, 255);
+                }
+            }
+            checkCrl(bytes[0..n], certs[0].handle, certs[1].handle, 1767225600) catch {};
+        }
+    }.run, .{});
+}

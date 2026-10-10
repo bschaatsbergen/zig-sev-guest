@@ -31,6 +31,13 @@ pub fn build(b: *std.Build) void {
     }
     const tests = b.addTest(.{ .root_module = mod });
     b.step("test", "Run deterministic, offline tests").dependOn(&b.addRunArtifact(tests).step);
+    const security_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/security_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "sev_guest", .module = mod }},
+    }) });
+    b.step("security-test", "Run exhaustive offline report tampering checks").dependOn(&b.addRunArtifact(security_tests).step);
     const check = b.step("check", "Compile tests and examples without executing them");
     check.dependOn(&tests.step);
     const uapi = b.addObject(.{

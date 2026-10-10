@@ -184,3 +184,37 @@ test "real AMD certificate schema and malformed DER" {
     try std.testing.expectError(error.InvalidExtension, number(&.{ 2, 2, 0, 1 }));
     try std.testing.expectEqual(255, try number(&.{ 2, 2, 0, 255 }));
 }
+
+test "fuzz certificate decoding and AMD extensions" {
+    const parts = try splitChain(try @import("trust.zig").amd(.milan, .vcek));
+    try std.testing.fuzz(parts.root, struct {
+        fn run(pem: []const u8, smith: *std.testing.Smith) !void {
+            const seeds = [_][]const u8{
+                @embedFile("testdata/vcek.der"),
+                @embedFile("testdata/synthetic/vlek.der"),
+                @embedFile("testdata/synthetic/turin.der"),
+                pem,
+            };
+            var bytes: [8192]u8 = undefined;
+            var n: usize = undefined;
+            if (smith.value(bool)) {
+                n = smith.valueRangeAtMost(u16, 0, bytes.len);
+                smith.bytes(bytes[0..n]);
+            } else {
+                const seed = seeds[smith.index(seeds.len)];
+                @memcpy(bytes[0..seed.len], seed);
+                n = if (smith.value(bool)) seed.len else smith.index(seed.len + 1);
+                for (0..smith.valueRangeAtMost(u8, 1, 8)) |_| {
+                    bytes[smith.index(seed.len)] ^= smith.valueRangeAtMost(u8, 1, 255);
+                }
+            }
+            if (Certificate.parse(bytes[0..n])) |cert| {
+                defer cert.deinit();
+                cert.commonName("SEV-VCEK") catch {};
+                _ = endorsements(cert, .vcek, .milan) catch {};
+                _ = endorsements(cert, .vlek, .milan) catch {};
+                _ = endorsements(cert, .vcek, .turin) catch {};
+            } else |_| {}
+        }
+    }.run, .{});
+}

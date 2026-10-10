@@ -109,10 +109,23 @@ test "fuzz certificate table framing" {
     try std.testing.fuzz({}, struct {
         fn run(_: void, smith: *std.testing.Smith) !void {
             var bytes: [8192]u8 = undefined;
-            smith.bytes(&bytes);
-            const n = smith.valueRangeAtMost(u16, 0, bytes.len);
+            if (smith.value(bool)) {
+                smith.bytes(&bytes);
+            } else {
+                @memcpy(&bytes, @embedFile("testdata/synthetic/vcek-table.bin"));
+                for (0..smith.valueRangeAtMost(u8, 1, 8)) |_| {
+                    bytes[smith.index(bytes.len)] ^= smith.valueRangeAtMost(u8, 1, 255);
+                }
+                const header = smith.valueRangeAtMost(u16, 0, 3) * 24;
+                std.mem.writeInt(u32, bytes[header + 16 ..][0..4], smith.value(u32), .little);
+                std.mem.writeInt(u32, bytes[header + 20 ..][0..4], smith.value(u32), .little);
+            }
+            const n = if (smith.value(bool)) bytes.len else smith.valueRangeAtMost(u16, 0, bytes.len);
             if (parse(bytes[0..n])) |table| {
-                for (0..table.count) |i| _ = table.entry(i);
+                for (0..table.count) |i| {
+                    const e = table.entry(i);
+                    try std.testing.expectEqualSlices(u8, e.data, table.find(e.id).?);
+                }
             } else |_| {}
         }
     }.run, .{});

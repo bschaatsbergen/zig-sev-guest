@@ -266,10 +266,24 @@ test "fuzz report framing" {
     try std.testing.fuzz({}, struct {
         fn run(_: void, smith: *std.testing.Smith) !void {
             var bytes: [size + 1]u8 = undefined;
-            smith.bytes(&bytes);
-            const n = smith.valueRangeAtMost(u16, 0, bytes.len);
+            const seeds = [_][]const u8{
+                @embedFile("testdata/attestation.bin"),
+                @embedFile("testdata/synthetic/vlek-report.bin"),
+                @embedFile("testdata/synthetic/turin-report.bin"),
+            };
+            if (smith.value(bool)) {
+                smith.bytes(&bytes);
+            } else {
+                @memcpy(bytes[0..size], seeds[smith.index(seeds.len)]);
+                bytes[size] = 0;
+                for (0..smith.valueRangeAtMost(u8, 1, 8)) |_| {
+                    bytes[smith.index(bytes.len)] ^= smith.valueRangeAtMost(u8, 1, 255);
+                }
+            }
+            const n = if (smith.value(bool)) size else smith.valueRangeAtMost(u16, 0, bytes.len);
             if (parse(bytes[0..n])) |r| {
                 try std.testing.expectEqualSlices(u8, bytes[0..n], &r.raw);
+                try std.testing.expectEqualDeep(r, try parse(&r.raw));
             } else |_| {}
         }
     }.run, .{});
