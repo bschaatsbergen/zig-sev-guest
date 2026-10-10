@@ -19,3 +19,8 @@ src/abi.zig describes the Linux userspace interface from
 include/uapi/linux/sev-guest.h: Copyright (C) 2021 Advanced Micro Devices, Inc.
 The original UAPI is GPL-2.0-only WITH Linux-syscall-note; its syscall exception
 permits use in non-GPL userspace programs. No Linux driver implementation is copied.
+
+src/testdata/synthetic contains local test-only certificates, reports and CRLs
+created by tools/generate_fixtures.py. The report template is the upstream
+attestation.bin attributed above. These certificates are not issued by AMD and
+are never installed as default trust roots. Generated private keys are discarded.

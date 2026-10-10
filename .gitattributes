@@ -1,0 +1,5 @@
+# Preserve the exact bytes of upstream public certificate fixtures (some use CRLF).
+src/trust/*.pem -text whitespace=cr-at-eol,-blank-at-eof
+src/testdata/*.bin -text
+src/testdata/*.der -text
+src/testdata/synthetic/* -text
