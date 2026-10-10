@@ -1,2 +1,98 @@
 # zig-sev-guest
-zig-sev-guest provides Zig bindings for Linux’s /dev/sev-guest device and utilities for verifying SEV-SNP attestation reports.
+
+A Zig 0.17.0 library for retrieving and verifying AMD SEV-SNP attestation reports.
+Inspired by [google/go-sev-guest](https://github.com/google/go-sev-guest).
+
+Retrieval, parsing, signature verification, and policy validation are separate
+operations. Parsing a report does not make it trustworthy.
+
+## Build
+
+Verification uses OpenSSL 3 or 4 (`libcrypto`). There are no Zig dependencies.
+Tests run offline without SNP hardware.
+
+```sh
+# macOS
+brew install openssl@3
+zig build -Dopenssl-prefix="$(brew --prefix openssl@3)"
+zig build test -Dopenssl-prefix="$(brew --prefix openssl@3)"
+
+# Compile Linux device code on macOS, without OpenSSL or Linux execution
+zig build check -Dcrypto=false -Dtarget=x86_64-linux-musl
+```
+
+On Linux, install `libssl-dev` and `pkg-config`, then run `zig build` and
+`zig build test` without the OpenSSL prefix option.
+
+## Use
+
+Add this package to your Zig dependencies and import its `sev_guest` module.
+The verifier must supply the expected report data, measurement, VMPL, and minimum
+TCB. Debug, SMT, and migration are denied unless explicitly allowed.
+
+```zig
+const sev = @import("sev_guest");
+
+var diagnostics: sev.verify.Diagnostics = .{};
+const report = try sev.verify.andValidate(report_bytes, .{
+    .endorsement = vcek_bytes,
+}, .{
+    .product = .milan,
+    .now = trusted_unix_time,
+    .revocation = .{ .amd_root_crl = crl_bytes },
+}, expected_policy, &diagnostics);
+```
+
+AMD roots are embedded; custom roots replace them explicitly. Certificate validity
+uses the caller's trusted time. The CRL checks ASK/ASVK revocation; `.unchecked`
+explicitly skips it. TCB floors apply to reported, current, committed, and launch
+TCBs. Use a fresh verifier challenge and an independently approved measurement.
+
+Verification is offline. Optional KDS retrieval uses HTTPS, a 30-second deadline,
+bounded responses, and no redirects or retries. VLEK leaves come from the guest
+or CSP. Downloaded roots are never trusted automatically.
+
+## Examples
+
+Inspect a saved report:
+
+```sh
+zig build inspect -Dcrypto=false -- src/testdata/attestation.bin
+```
+
+Verify the included synthetic VLEK report, certificate table, CRL, and policy:
+
+```sh
+zig build verify -Dopenssl-prefix="$(brew --prefix openssl@3)" -- --table \
+  src/testdata/synthetic/vlek-report.bin src/testdata/synthetic/vlek-table.bin \
+  examples/synthetic-policy.json - src/testdata/synthetic/root.der \
+  src/testdata/synthetic/vlek-valid.crl
+```
+
+Inside a Linux SNP guest, save a report and certificate table. Supply a fresh
+64-byte challenge as 128 hexadecimal characters and the guest's actual VMPL:
+
+```sh
+zig build -Dcrypto=false
+sudo ./zig-out/bin/sev-fetch report.bin "$REPORT_DATA_HEX" "$VMPL" certs.bin
+```
+
+Retrieve certificates explicitly, then verify against your own `policy.json`:
+
+```sh
+./zig-out/bin/sev-kds report.bin milan amd
+./zig-out/bin/sev-verify --table report.bin certs.bin policy.json - - amd.crl.der
+```
+
+Build with cryptography enabled to obtain `sev-verify`. The example policy format
+is in `examples/synthetic-policy.json`; omit its historical `verification_time`
+for normal clock-based verification. File-writing examples overwrite their outputs.
+
+Report versions 2–5 are supported. VCEK verification supports Milan, Genoa, Siena,
+and Turin; VLEK supports Milan and Genoa. Version 2 uses the family-19h TCB layout.
+Turin needs signed CPUID fields. Version 6 and Turin VLEK are rejected. Real Milan
+version-5 retrieval and verification were tested on a GCP SNP guest at VMPL 2;
+VLEK and Turin have offline signed-fixture coverage.
+
+Public API comments cover ownership and protocol details. Apache-2.0;
+see [NOTICE](NOTICE) for fixture provenance.
