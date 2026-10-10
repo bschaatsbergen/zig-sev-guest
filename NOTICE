@@ -1,0 +1,21 @@
+zig-sev-guest is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This project's design was informed by google/go-sev-guest (Apache-2.0):
+Copyright 2022 Google LLC
+https://github.com/google/go-sev-guest
+Revision 9c5dffcd8230247336e07c70804a31f6b39ab3c9.
+
+src/testdata/attestation.bin and src/testdata/vcek.der are copied unchanged
+from verify/testdata/attestation.bin and verify/testdata/vcek.testcer in that
+revision. The report is an actual Milan version-2 VCEK-signed report. Its
+certificate and signed data are public test material, not a trust policy.
+
+src/trust/*.pem are AMD-published public certificate chains, copied unchanged
+from verify/trust in the same revision. Original source:
+https://kdsintf.amd.com/{vcek,vlek}/v1/{Milan,Genoa,Turin}/cert_chain
+These embed public certificates only, never private keys.
+
+src/abi.zig describes the Linux userspace interface from
+include/uapi/linux/sev-guest.h: Copyright (C) 2021 Advanced Micro Devices, Inc.
+The original UAPI is GPL-2.0-only WITH Linux-syscall-note; its syscall exception
+permits use in non-GPL userspace programs. No Linux driver implementation is copied.

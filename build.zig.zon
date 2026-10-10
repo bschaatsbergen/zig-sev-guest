@@ -1,0 +1,8 @@
+.{
+    .name = .sev_guest,
+    .fingerprint = 0xafd9777aefee937f, // Changing this has security and trust implications.
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{ "build.zig", "build.zig.zon", "src", "examples", "LICENSE", "NOTICE", "README.md", "docs" },
+}
