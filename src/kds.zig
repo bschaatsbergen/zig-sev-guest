@@ -13,6 +13,7 @@ pub const Getter = struct {
 
 pub fn vcekUrl(allocator: std.mem.Allocator, r: *const report.Report, product: report.Product) ![]u8 {
     if (r.signer != .vcek) return error.VcekRequired;
+    if (r.cpu == null and product == .turin) return error.UnsupportedReportProduct;
     if (r.cpu) |cpu| if (try cpu.product() != product) return error.ReportProductMismatch;
     const t = r.reported_tcb;
     if (t.boot_loader > 127 or t.tee > 127 or t.snp > 127 or t.fmc > 127) return error.InvalidTcb;
@@ -27,7 +28,7 @@ pub fn vcekUrl(allocator: std.mem.Allocator, r: *const report.Report, product: r
 
 pub fn productUrl(allocator: std.mem.Allocator, product: report.Product, signer: report.Signer, resource: enum { cert_chain, crl }) ![]u8 {
     if (signer == .none) return error.UnsignedReport;
-    if (product == .turin and signer == .vlek) return error.UnsupportedSigningProduct;
+    if ((product == .turin or product == .siena) and signer == .vlek) return error.UnsupportedSigningProduct;
     return std.fmt.allocPrint(allocator, origin ++ "/{s}/v1/{s}/{s}", .{ @tagName(signer), product.rootProduct().name(), @tagName(resource) });
 }
 

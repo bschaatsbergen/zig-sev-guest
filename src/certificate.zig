@@ -121,8 +121,8 @@ pub fn endorsements(cert: Certificate, signer: report.Signer, product: report.Pr
     const version = try number(try cert.required("1.3.6.1.4.1.3704.1.1"));
     const turin = product == .turin;
     if (version != @as(u8, if (turin) 1 else 0)) return error.UnsupportedCertificateVersion;
-    // AMD 58369 currently documents the VLEK v0 schema for family 19h only.
-    if (turin and signer == .vlek) return error.UnsupportedSigningProduct;
+    // AMD 58369 documents the VLEK v0 schema for Milan and Genoa.
+    if ((turin or product == .siena) and signer == .vlek) return error.UnsupportedSigningProduct;
     const name = try text(try cert.required("1.3.6.1.4.1.3704.1.2"));
     const prefix = product.name();
     if (!std.mem.startsWith(u8, name, prefix)) return error.CertificateProductMismatch;

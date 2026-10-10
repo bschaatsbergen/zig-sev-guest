@@ -66,7 +66,10 @@ fn endorsementKey(cert: Certificate) !*c.EVP_PKEY {
 
 fn caProfile(cert: Certificate) !void {
     try signatureProfile(cert);
-    if (c.X509_check_ca(cert.handle) == 0) return error.InvalidCertificateAuthority;
+    if (c.X509_check_ca(cert.handle) == 0 or
+        c.X509_get_extension_flags(cert.handle) & c.EXFLAG_BCONS == 0 or
+        c.X509_get_key_usage(cert.handle) == std.math.maxInt(u32) or
+        c.X509_get_key_usage(cert.handle) & c.KU_KEY_CERT_SIGN == 0) return error.InvalidCertificateAuthority;
     const key = c.X509_get_pubkey(cert.handle) orelse return error.InvalidPublicKey;
     defer c.EVP_PKEY_free(key);
     if (c.EVP_PKEY_is_a(key, "RSA") != 1 or c.EVP_PKEY_get_bits(key) != 4096) return error.InvalidPublicKey;
@@ -110,6 +113,7 @@ pub fn attestation(raw: []const u8, chain: Chain, options: Options, diagnostics:
     const r = try report.parse(raw);
     if (r.signer == .none or r.mask_chip_key) return error.UnsignedReport;
     if (options.now < 0) return error.InvalidVerificationTime;
+    if (r.cpu == null and options.product == .turin) return error.UnsupportedReportProduct;
     if (r.cpu) |cpu| if (try cpu.product() != options.product) return error.ReportProductMismatch;
     const defaults = try certificate.splitChain(try trust.amd(options.product, r.signer));
     const leaf = try Certificate.parse(chain.endorsement);
@@ -177,6 +181,7 @@ pub fn attestation(raw: []const u8, chain: Chain, options: Options, diagnostics:
 
 fn checkCrl(bytes: []const u8, root: *c.X509, intermediate: *c.X509, now: i64) !void {
     if (bytes.len == 0 or bytes.len > 1024 * 1024) return error.InvalidCrl;
+    if (c.X509_get_key_usage(root) & c.KU_CRL_SIGN == 0) return error.InvalidCrlIssuer;
     var p: [*c]const u8 = bytes.ptr;
     const crl = c.d2i_X509_CRL(null, &p, @intCast(bytes.len)) orelse return error.InvalidCrl;
     defer c.X509_CRL_free(crl);
@@ -299,4 +304,30 @@ test "Turin VCEK uses FMC TCB and eight-byte hardware identity" {
     }, &d);
     try std.testing.expectEqual(1, r.reported_tcb.fmc);
     try std.testing.expectEqual(4, r.reported_tcb.snp);
+}
+
+test "embedded AMD CA roles signatures and unsupported products" {
+    inline for (.{ report.Product.milan, report.Product.genoa, report.Product.turin }) |product| {
+        inline for (.{ report.Signer.vcek, report.Signer.vlek }) |signer| {
+            if (!(product == .turin and signer == .vlek)) {
+                const parts = try certificate.splitChain(try trust.amd(product, signer));
+                const root = try Certificate.parse(parts.root);
+                defer root.deinit();
+                const intermediate = try Certificate.parse(parts.intermediate);
+                defer intermediate.deinit();
+                try caProfile(root);
+                try caProfile(intermediate);
+                const key = c.X509_get_pubkey(root.handle) orelse return error.InvalidPublicKey;
+                defer c.EVP_PKEY_free(key);
+                try std.testing.expectEqual(1, c.X509_verify(root.handle, key));
+                try std.testing.expectEqual(1, c.X509_verify(intermediate.handle, key));
+            }
+        }
+    }
+    try std.testing.expectError(error.UnsupportedSigningProduct, trust.amd(.turin, .vlek));
+    try std.testing.expectError(error.UnsupportedSigningProduct, trust.amd(.siena, .vlek));
+    var d: Diagnostics = .{};
+    try std.testing.expectError(error.UnsupportedReportProduct, attestation(@embedFile("testdata/attestation.bin"), .{
+        .endorsement = @embedFile("testdata/vcek.der"),
+    }, .{ .product = .turin, .now = 1767225600, .revocation = .unchecked }, &d));
 }
