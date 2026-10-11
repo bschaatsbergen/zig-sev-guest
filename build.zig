@@ -29,7 +29,11 @@ pub fn build(b: *std.Build) void {
             mod.addRPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
         } else bindings.linkSystemLibrary("crypto", .{});
     }
-    const tests = b.addTest(.{ .root_module = mod });
+    const test_filter = b.option([]const u8, "test-filter", "Only include tests whose names contain this text");
+    const tests = b.addTest(.{
+        .root_module = mod,
+        .filters = if (test_filter) |filter| &.{filter} else &.{},
+    });
     b.step("test", "Run deterministic, offline tests").dependOn(&b.addRunArtifact(tests).step);
     const security_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/security_tests.zig"),

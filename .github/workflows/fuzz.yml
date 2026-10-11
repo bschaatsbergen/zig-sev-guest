@@ -1,0 +1,71 @@
+name: Fuzz
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Fuzz executions per target
+        type: choice
+        default: 1M
+        options: [100K, 1M, 10M]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: report
+            filter: fuzz report framing
+          - target: certificate-table
+            filter: fuzz certificate table framing
+          - target: certificate
+            filter: fuzz certificate decoding and AMD extensions
+          - target: signature
+            filter: fuzz signed report tampering cannot authenticate
+          - target: crl
+            filter: fuzz CRL decoding and revocation checks
+          - target: device
+            filter: fuzz hostile device responses and bounded certificate negotiation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          cache-key: fuzz-${{ matrix.target }}
+      - name: Install OpenSSL
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+      - name: Run native fuzzer
+        shell: bash
+        env:
+          FUZZ_FILTER: ${{ matrix.filter }}
+          FUZZ_RUNS: ${{ inputs.runs || '10K' }}
+        run: |
+          set -o pipefail
+          zig build test -Doptimize=ReleaseSafe \
+            "-Dtest-filter=$FUZZ_FILTER" "--fuzz=$FUZZ_RUNS" \
+            -j2 --summary all 2>&1 | tee fuzz.log
+      - name: Save failure inputs and diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failure-${{ matrix.target }}
+          include-hidden-files: true
+          path: |
+            fuzz.log
+            .zig-cache/f/
+            .zig-cache/v/
+          retention-days: 14

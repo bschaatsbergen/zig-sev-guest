@@ -26,6 +26,14 @@ zig build check -Dcrypto=false -Dtarget=x86_64-linux-musl
 Use equivalent packages on other systems. For a custom OpenSSL installation,
 pass `-Dopenssl-prefix=/path/to/openssl` to the build commands.
 
+The fuzz workflow runs each native Zig fuzz target separately on PRs and pushes
+to `main`. Longer campaigns are available through manual workflow dispatch.
+To run a target locally:
+
+```sh
+zig build test -Doptimize=ReleaseSafe -Dtest-filter="fuzz report framing" --fuzz=1M
+```
+
 ## Use
 
 Add this package to your Zig dependencies and import its `sev_guest` module.
